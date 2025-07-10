@@ -135,8 +135,8 @@ def parse_lv3(contract_level_noninstall, contract_level_install, contract_level_
 
 
 @task(name="Export file")
-def export_file(df_in, file_name, mode):
-    df_in.to_csv('Output/' + file_name, index=False, sep=';', mode=mode)
+def export_file(df_in, file_name):
+    df_in.to_parquet('Output/' + file_name , index=False)
 
 @flow(name="PCB Pipeline", task_runner=ConcurrentTaskRunner())
 def pcb_pipeline(input_file):
@@ -183,14 +183,10 @@ def pcb_pipeline(input_file):
                        'ts_install', 
                        'ts_noninstall'] 
 
-        output_path = [i+'_'+input_path for i in result_file]
-        # Concatenate all dataframes
-        if i == 0:
-            for x, y in zip(result, output_path):
-                export_file.submit(x, y, 'w')
-        else:
-            for x, y in zip(result, output_path):
-                export_file.submit(x, y, 'a')
+        output_path = [file+f'_{i}_'+input_path.replace('.csv', '.parquet') for file in result_file]
+
+        for x, y in zip(result, output_path):
+                export_file.submit(x, y)
 
 if __name__ == "__main__":        
     input_path = 'pcb_2024_T01_T06.csv'
