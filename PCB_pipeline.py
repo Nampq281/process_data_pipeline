@@ -136,7 +136,7 @@ def parse_lv3(contract_level_noninstall, contract_level_install, contract_level_
 
 @task(name="Export file")
 def export_file(df_in, file_name, mode):
-    df_in.to_csv('Output/' + file_name, index=False, mode=mode)
+    df_in.to_csv('Output/' + file_name, index=False, sep=';', mode=mode)
 
 @flow(name="PCB Pipeline", task_runner=ConcurrentTaskRunner())
 def pcb_pipeline(input_file):
