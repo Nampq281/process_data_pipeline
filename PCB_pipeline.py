@@ -8,7 +8,9 @@ from src.utils import *
 from prefect import task, flow
 # from prefect.futures import wait
 from prefect.task_runners import ConcurrentTaskRunner
+from prefect_dask import DaskTaskRunner
 from prefect.logging import get_run_logger
+
 
 def conso_id(id1, id2):
     if id1 == "'":
@@ -23,7 +25,7 @@ def conso_id(id1, id2):
     return final_id
 
 def get_log(row):
-    full_message = xmltodict.parse(row)
+    full_message = xmltodict.parse(row) 
     try:
         to_dict = full_message['MGResponse']['RI_Req_Output']['CreditHistory']
     except:
@@ -138,57 +140,73 @@ def parse_lv3(contract_level_noninstall, contract_level_install, contract_level_
 def export_file(df_in, file_name):
     df_in.to_parquet('Output/' + file_name , index=False)
 
-@flow(name="PCB Pipeline", task_runner=ConcurrentTaskRunner())
-def pcb_pipeline(input_file):
+@flow(name="PCB Pipeline", task_runner=DaskTaskRunner())
+def pcb_pipeline():
     logger = get_run_logger()
+    chunksize = 3000
+    start_chunk = 113    
+    skip_rows = start_chunk * chunksize
+    file_list = [
+        'pcb_2022_T01_T06.csv',
+        # 'pcb_2022_T07_T12.csv',
+        # 'pcb_2023_T01_T06.csv',
+        # 'pcb_2023_T07_T12.csv',
+        # 'pcb_2024_T01_T06.csv', #DONE
+        # 'pcb_2024_T07_T12.csv'
+    ]
 
-    for i, df in enumerate(pd.read_csv(input_file, chunksize=3000)):
-        logger.info(f"___________________________Chunk number {i}___________________________")
-        # Load
-        df = process_raw_input(df)
-        # Parse cus
-        df_root = parse_lv1(df)
-        # Parse contract
-        contract_level_noninstall, contract_level_install, contract_level_card, \
-            not_grant_install, not_grant_noninstall, not_grant_card = parse_lv2(df_root)
-        
-        contract_level_noninstall, contract_level_install, contract_level_card = process_contract_level(contract_level_noninstall, 
-                                                                                                        contract_level_install, 
-                                                                                                        contract_level_card)
-        # Parse time series
-        ts_card, ts_install, ts_noninstall = parse_lv3(contract_level_noninstall, 
-                                                        contract_level_install, 
-                                                        contract_level_card)
-        
-        # Store results
-        result = [df_root,
-                contract_level_noninstall, 
-                contract_level_install, 
-                contract_level_card,
-                not_grant_install, 
-                not_grant_noninstall, 
-                not_grant_card,
-                ts_card, 
-                ts_install, 
-                ts_noninstall
-                ]
-        result_file = ['root', 
-                       'noninstall', 
-                       'install', 
-                       'card',
-                       'not_grant_install', 
-                       'not_grant_noninstall', 
-                       'not_grant_card',
-                       'ts_card', 
-                       'ts_install', 
-                       'ts_noninstall'] 
+    for input_file in file_list:
+        logger.info(f" ------------------------------------> Processing file: {input_file}")
+        for i, df in enumerate(pd.read_csv(input_file, chunksize=3000, 
+                                           skiprows=range(1, skip_rows + 1), header=0
+                                        ), start=start_chunk):
+            logger.info(f"___________________________Chunk number {i}___________________________")
+            # Load
+            df = process_raw_input(df)
+            # Parse cus
+            df_root = parse_lv1(df)
+            # Parse contract
+            contract_level_noninstall, contract_level_install, contract_level_card, \
+                not_grant_install, not_grant_noninstall, not_grant_card = parse_lv2(df_root)
+            
+            contract_level_noninstall, contract_level_install, contract_level_card = process_contract_level(contract_level_noninstall, 
+                                                                                                            contract_level_install, 
+                                                                                                            contract_level_card)
+            # Parse time series
+            ts_card, ts_install, ts_noninstall = parse_lv3(contract_level_noninstall, 
+                                                            contract_level_install, 
+                                                            contract_level_card)
+            
+            # Store results
+            result = [df_root,
+                    contract_level_noninstall, 
+                    contract_level_install, 
+                    contract_level_card,
+                    not_grant_install, 
+                    not_grant_noninstall, 
+                    not_grant_card,
+                    ts_card, 
+                    ts_install, 
+                    ts_noninstall
+                    ]
+            result_file = ['root', 
+                        'noninstall', 
+                        'install', 
+                        'card',
+                        'not_grant_install', 
+                        'not_grant_noninstall', 
+                        'not_grant_card',
+                        'ts_card', 
+                        'ts_install', 
+                        'ts_noninstall'] 
 
-        output_path = [file+f'_{i}_'+input_path.replace('.csv', '.parquet') for file in result_file]
+            output_path = [file+f'_{i}_'+input_file.replace('.csv', '.parquet') for file in result_file]
 
-        for x, y in zip(result, output_path):
-                export_file.submit(x, y)
+            for x, y in zip(result, output_path):
+                    export_file(x, y)
+                    
+        logger.info(f"Finished file: {input_file}")        
 
 if __name__ == "__main__":        
-    input_path = 'pcb_2024_T01_T06.csv'
-    pcb_pipeline(input_path)
+    pcb_pipeline()
     print("PCB Pipeline completed successfully.")
