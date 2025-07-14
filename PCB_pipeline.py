@@ -24,11 +24,31 @@ def conso_id(id1, id2):
             final_id = id1+"_"+id2
     return final_id
 
-def get_log(row):
+def get_log_subject(row):
+    full_message = xmltodict.parse(row) 
+    try:
+        to_dict = full_message['MGResponse']['RI_Req_Output']
+        try:
+            to_dict = to_dict['Subject']['Matched']
+        except KeyError:
+            to_dict = {}
+
+    except KeyError:
+        to_dict = full_message['MGResponse']['CI_Req_Output']
+        try:
+            to_dict = to_dict['Subject']['Matched']
+        except KeyError:
+            to_dict = {}
+    return str(to_dict)
+
+
+    return str(to_dict)
+
+def get_log_credit(row):
     full_message = xmltodict.parse(row) 
     try:
         to_dict = full_message['MGResponse']['RI_Req_Output']['CreditHistory']
-    except:
+    except KeyError:
         to_dict = full_message['MGResponse']['CI_Req_Output']['CreditHistory']
     return str(to_dict)
 
@@ -56,7 +76,10 @@ def parse_data(process_name, df_in, field, id_lst, p_bar=False):
     return df_out
 
 def gen_id_level2(df):
-    return df['cccd'].astype(str) + '_' + df['CommonData.CBContractCode']
+    try: 
+        return df['cccd'].astype(str) + '_' + df['CommonData.CBContractCode']
+    except KeyError:
+        return None 
 
 def treat_dtype(df, col):
     try:
@@ -67,20 +90,30 @@ def treat_dtype(df, col):
 
 @task(name="Load raw input data")
 def process_raw_input(df):
-    df.columns = ['id1', 'id2', 'name', 'address', 'log', 'process_date']
+    # df.columns = ['id1', 'id2', 'name', 'address', 'log', 'process_date']
     df['process_date'] = df['process_date'].astype(str)
     df['cccd'] = df[['id1', 'id2']].apply(lambda 
                                     row: conso_id(row.id1, row.id2),
                                     axis=1
                                     )
-    df['pcb'] = df['log'].apply(lambda row: get_log(row))
+    # df['pcb'] = df['log'].apply(lambda row: get_log_credit(row))
+    df['pcb_id'] = df['log'].apply(lambda row: get_log_subject(row))
     return df
+
+@task(name="Extract data Customer ID, contract ID")
+def parse_lv0(df):
+    field = ['pcb_id']
+    id_col_list = ['cccd', 'process_date']
+    # parse cus ID data
+    df_subject_id = parse_data('subject_id', df, field, id_col_list)
+    return df_subject_id
+
 
 @task(name="Extract data Customer level")
 def parse_lv1(df):
     field = ['pcb']
     id_col_list = ['cccd', 'process_date']
-    # parse cus levle data
+    # parse cus level data
     df_root = parse_data('root', df, field, id_col_list)
 
     dtype_treat_lst = ['Contract.Instalments.GrantedContract',
@@ -143,67 +176,78 @@ def export_file(df_in, file_name):
 @flow(name="PCB Pipeline", task_runner=DaskTaskRunner())
 def pcb_pipeline():
     logger = get_run_logger()
-    chunksize = 3000
-    start_chunk = 113    
+    chunksize = 20000
+    start_chunk = 0    
     skip_rows = start_chunk * chunksize
     file_list = [
         'pcb_2022_T01_T06.csv',
-        # 'pcb_2022_T07_T12.csv',
-        # 'pcb_2023_T01_T06.csv',
-        # 'pcb_2023_T07_T12.csv',
-        # 'pcb_2024_T01_T06.csv', #DONE
-        # 'pcb_2024_T07_T12.csv'
+        'pcb_2022_T07_T12.csv', 
+        'pcb_2023_T01_T06.csv', 
+        'pcb_2023_T07_T12.csv', 
+        'pcb_2024_T01_T06.csv', 
+        'pcb_2024_T07_T12.csv'
     ]
 
     for input_file in file_list:
         logger.info(f" ------------------------------------> Processing file: {input_file}")
-        for i, df in enumerate(pd.read_csv(input_file, chunksize=3000, 
-                                           skiprows=range(1, skip_rows + 1), header=0
-                                        ), start=start_chunk):
+        for i, df in enumerate(pd.read_csv(input_file, 
+                                   chunksize=chunksize, 
+                                #    skiprows=range(1, skip_rows + 1), # Continue from last chunk
+                                   header=None, 
+                                   names=['id1', 'id2', 'name', 'address', 'log', 'process_date']
+                                ), start=start_chunk):
             logger.info(f"___________________________Chunk number {i}___________________________")
             # Load
             df = process_raw_input(df)
-            # Parse cus
-            df_root = parse_lv1(df)
-            # Parse contract
-            contract_level_noninstall, contract_level_install, contract_level_card, \
-                not_grant_install, not_grant_noninstall, not_grant_card = parse_lv2(df_root)
-            
-            contract_level_noninstall, contract_level_install, contract_level_card = process_contract_level(contract_level_noninstall, 
-                                                                                                            contract_level_install, 
-                                                                                                            contract_level_card)
-            # Parse time series
-            ts_card, ts_install, ts_noninstall = parse_lv3(contract_level_noninstall, 
-                                                            contract_level_install, 
-                                                            contract_level_card)
-            
-            # Store results
-            result = [df_root,
-                    contract_level_noninstall, 
-                    contract_level_install, 
-                    contract_level_card,
-                    not_grant_install, 
-                    not_grant_noninstall, 
-                    not_grant_card,
-                    ts_card, 
-                    ts_install, 
-                    ts_noninstall
-                    ]
-            result_file = ['root', 
-                        'noninstall', 
-                        'install', 
-                        'card',
-                        'not_grant_install', 
-                        'not_grant_noninstall', 
-                        'not_grant_card',
-                        'ts_card', 
-                        'ts_install', 
-                        'ts_noninstall'] 
 
-            output_path = [file+f'_{i}_'+input_file.replace('.csv', '.parquet') for file in result_file]
+            # Parse cus ID level
+            df_subject_id = parse_lv0(df)
 
-            for x, y in zip(result, output_path):
-                    export_file(x, y)
+            df_subject_id.to_parquet('Output/pcb_root_id_' + input_file.replace('.csv', f'_{i}.parquet'), index=False)
+
+            # # Parse cus
+            # df_root = parse_lv1(df)
+            # # Parse contract
+            # contract_level_noninstall, contract_level_install, contract_level_card, \
+            #     not_grant_install, not_grant_noninstall, not_grant_card = parse_lv2(df_root)
+            
+            # contract_level_noninstall, contract_level_install, contract_level_card = process_contract_level(contract_level_noninstall, 
+            #                                                                                                 contract_level_install, 
+            #                                                                                                 contract_level_card)
+            # # Parse time series
+            # ts_card, ts_install, ts_noninstall = parse_lv3(contract_level_noninstall, 
+            #                                                 contract_level_install, 
+            #                                                 contract_level_card)
+            
+            # # Store results
+            # result = [df_subject_id,
+            #         df_root,
+            #         contract_level_noninstall, 
+            #         contract_level_install, 
+            #         contract_level_card,
+            #         not_grant_install, 
+            #         not_grant_noninstall, 
+            #         not_grant_card,
+            #         ts_card, 
+            #         ts_install, 
+            #         ts_noninstall
+            #         ]
+            # result_file = ['subject_id',
+            #             'root', 
+            #             'noninstall', 
+            #             'install', 
+            #             'card',
+            #             'not_grant_install', 
+            #             'not_grant_noninstall', 
+            #             'not_grant_card',
+            #             'ts_card', 
+            #             'ts_install', 
+            #             'ts_noninstall'] 
+
+            # output_path = [file+f'_{i}_'+input_file.replace('.csv', '.parquet') for file in result_file]
+
+            # for x, y in zip(result, output_path):
+            #         export_file(x, y)
                     
         logger.info(f"Finished file: {input_file}")        
 
